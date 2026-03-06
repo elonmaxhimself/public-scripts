@@ -1,15 +1,14 @@
-curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
-chmod +x cloudflared
-
-TARGET_URL="http://127.0.0.1:7860"
+TARGET_URL="http://127.0.0.1:5000"
 LOG_FILE="tunnel.log"
 
 while true; do
     echo "--- Starting Cloudflare Tunnel ---"
+    # Clear old logs and start cloudflared in the background
     rm -f $LOG_FILE
     ./cloudflared tunnel --no-autoupdate --protocol auto --url $TARGET_URL > $LOG_FILE 2>&1 &
     TUNNEL_PID=$!
 
+    # Wait for the URL to appear in the logs (timeout after 15s)
     echo "Waiting for URL generation..."
     for i in {1..15}; do
         TUNNEL_URL=$(grep -oE "https://[a-zA-Z0-9.-]+\.trycloudflare\.com" $LOG_FILE | head -n 1)
@@ -26,12 +25,16 @@ while true; do
     echo "Generated URL: $TUNNEL_URL"
     echo "Testing DNS propagation..."
 
+    # Test the URL for up to 30 seconds
     SUCCESS=false
     for i in {1..10}; do
+        # We check if curl can resolve the host (exit code 6 is "Could not resolve host")
+        # -s: silent, -o: ignore body, -I: headers only
         curl -s -I "$TUNNEL_URL" > /dev/null
         CURL_EXIT_STATUS=$?
 
         if [ $CURL_EXIT_STATUS -eq 0 ] || [ $CURL_EXIT_STATUS -eq 22 ]; then
+            # Exit 22 can happen if it's a 404/5xx, but it means the host RESOLVED
             echo "✅ Tunnel is LIVE at $TUNNEL_URL"
             SUCCESS=true
             break
@@ -44,6 +47,7 @@ while true; do
     done
 
     if [ "$SUCCESS" = true ]; then
+        # Keep the script running so the background tunnel stays alive
         wait $TUNNEL_PID
     else
         echo "❌ Tunnel failed to stabilize. Killing and retrying from scratch..."
